@@ -1,0 +1,32 @@
+{
+  "name": "@neuralpath/database",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "db:push": "tsx src/migrate.ts && echo '✅ Schema aplicado a Turso'",
+    "db:seed": "tsx src/seed.ts",
+    "db:studio": "prisma studio",
+    "db:generate": "prisma generate",
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.6.0",
+    "@prisma/adapter-libsql": "^5.14.0",
+    "@prisma/client": "^5.14.0"
+  },
+  "devDependencies": {
+    "@neuralpath/config": "workspace:*",
+    "prisma": "^5.14.0",
+    "tsx": "^4.11.0",
+    "typescript": "^5.4.5"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  }
+}
