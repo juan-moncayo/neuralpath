@@ -28,7 +28,7 @@
   },
   "pnpm": {
     "overrides": {
-      "@libsql/client": "^0.6.2"
+      "@libsql/client": "^0.8.0"
     }
   }
 }

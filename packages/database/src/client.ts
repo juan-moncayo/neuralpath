@@ -9,7 +9,7 @@ function createPrismaClient(): PrismaClient {
   if (!url) throw new Error("DATABASE_URL is required");
   if (!authToken) throw new Error("DATABASE_AUTH_TOKEN is required");
 
-  const libsql = createClient({ url, authToken });
+  const libsql = createClient({ url, authToken, intMode: "number" });
   const adapter = new PrismaLibSQL(libsql);
   return new PrismaClient({ adapter });
 }
