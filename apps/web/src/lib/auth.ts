@@ -1,10 +1,10 @@
 import NextAuth from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import Credentials from "next-auth/providers/credentials";
-import Google from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@neuralpath/database";
+import { authConfig } from "./auth.config";
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -12,17 +12,10 @@ const loginSchema = z.object({
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  ...authConfig,
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
-  pages: {
-    signIn: "/login",
-    error: "/login",
-  },
   providers: [
-    Google({
-      clientId: process.env["AUTH_GOOGLE_ID"] ?? "",
-      clientSecret: process.env["AUTH_GOOGLE_SECRET"] ?? "",
-    }),
+    ...authConfig.providers,
     Credentials({
       name: "credentials",
       credentials: {
@@ -55,22 +48,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token["id"] = user.id;
-        token["role"] = (user as { role?: string }).role ?? "parent";
-        token["plan"] = (user as { plan?: string }).plan ?? "free";
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token["id"] as string;
-        (session.user as { role?: string }).role = token["role"] as string;
-        (session.user as { plan?: string }).plan = token["plan"] as string;
-      }
-      return session;
-    },
-  },
 });
