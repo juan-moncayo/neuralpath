@@ -1,5 +1,4 @@
 import type { NextAuthConfig } from "next-auth";
-import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 
 /**
@@ -17,8 +16,6 @@ export const authConfig: NextAuthConfig = {
       clientId: process.env["AUTH_GOOGLE_ID"] ?? "",
       clientSecret: process.env["AUTH_GOOGLE_SECRET"] ?? "",
     }),
-    // Credentials solo declarado aquí sin lógica (la lógica va en auth.ts)
-    Credentials({ credentials: {} }),
   ],
   callbacks: {
     async jwt({ token, user }) {
