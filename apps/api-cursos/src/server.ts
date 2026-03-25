@@ -1,3 +1,8 @@
+// Cargar .env desde la raíz del monorepo ANTES de cualquier otro import
+import path from "path";
+import { config } from "dotenv";
+config({ path: path.resolve(__dirname, "../../../.env") });
+
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
