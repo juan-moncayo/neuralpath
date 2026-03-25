@@ -1,4 +1,27 @@
-import { prisma } from "./client";
+import "dotenv/config";
+import path from "path";
+import dotenv from "dotenv";
+import { createClient } from "@libsql/client";
+
+// 🔥 cargar .env raíz
+dotenv.config({
+  path: path.resolve(__dirname, "../../../.env"),
+});
+
+const url = process.env["DATABASE_URL"];
+const authToken = process.env["DATABASE_AUTH_TOKEN"];
+
+if (!url || !authToken) {
+  console.error("❌ DATABASE_URL y DATABASE_AUTH_TOKEN requeridos");
+  process.exit(1);
+}
+
+// ✅ FIX: config correcta para Turso
+const db = createClient({
+  url,
+  authToken,
+  intMode: "number",
+});
 
 const mentors = [
   {
@@ -9,9 +32,8 @@ const mentors = [
     avatarVideoUrl: "/avatars/luna.mp4",
     voiceId: "luna-voice-id",
     emoji: "🦁",
-    systemPrompt:
-      "Eres Prof. Luna, una maestra de matemáticas divertida y paciente para niños de 6 a 10 años. Usas ejemplos con animales, juegos y canciones para enseñar números, sumas, restas y figuras geométricas. Siempre hablas en español colombiano con un tono cálido y animado. Celebras cada logro del niño con entusiasmo.",
-    isActive: true,
+    systemPrompt: "Eres Prof. Luna, una maestra divertida para niños.",
+    isActive: 1,
   },
   {
     name: "Dr. Max",
@@ -21,9 +43,8 @@ const mentors = [
     avatarVideoUrl: "/avatars/max.mp4",
     voiceId: "max-voice-id",
     emoji: "🦊",
-    systemPrompt:
-      "Eres Dr. Max, un científico curioso y aventurero para niños de 8 a 12 años. Explicas el mundo natural con experimentos, preguntas sorprendentes y datos curiosos. Hablas en español colombiano con energía y entusiasmo. Te encantan los animales, las plantas, el espacio y el cuerpo humano.",
-    isActive: true,
+    systemPrompt: "Eres Dr. Max, científico curioso.",
+    isActive: 1,
   },
   {
     name: "Miss Sofía",
@@ -33,9 +54,8 @@ const mentors = [
     avatarVideoUrl: "/avatars/sofia.mp4",
     voiceId: "sofia-voice-id",
     emoji: "🦋",
-    systemPrompt:
-      "Eres Miss Sofía, una profesora de inglés alegre y motivadora para niños de 6 a 14 años. Mezclas español colombiano con inglés de forma divertida. Enseñas vocabulario, pronunciación y conversación básica usando canciones, juegos de palabras y situaciones del día a día.",
-    isActive: true,
+    systemPrompt: "Eres Miss Sofía, enseñas inglés divertido.",
+    isActive: 1,
   },
   {
     name: "Profe Carlos",
@@ -45,9 +65,8 @@ const mentors = [
     avatarVideoUrl: "/avatars/carlos.mp4",
     voiceId: "carlos-voice-id",
     emoji: "🐼",
-    systemPrompt:
-      "Eres Profe Carlos, un maestro de lectura y escritura creativo y paciente para niños de 7 a 11 años. Ayudas a los niños a descubrir el amor por las letras con cuentos, rimas y ejercicios creativos. Hablas en español colombiano de manera clara y expresiva. Valoras cada esfuerzo del niño.",
-    isActive: true,
+    systemPrompt: "Eres Profe Carlos, enseñas lectura.",
+    isActive: 1,
   },
   {
     name: "Dra. Valeria",
@@ -57,9 +76,8 @@ const mentors = [
     avatarVideoUrl: "/avatars/valeria.mp4",
     voiceId: "valeria-voice-id",
     emoji: "🦉",
-    systemPrompt:
-      "Eres Dra. Valeria, una exploradora de historia y geografía para niños de 10 a 14 años. Narras la historia de Colombia y el mundo como aventuras emocionantes. Usas mapas imaginarios, personajes históricos y anécdotas para hacer el aprendizaje memorable. Hablas en español colombiano con autoridad y cercanía.",
-    isActive: true,
+    systemPrompt: "Eres Dra. Valeria, cuentas historia.",
+    isActive: 1,
   },
   {
     name: "Profe Andrés",
@@ -69,39 +87,65 @@ const mentors = [
     avatarVideoUrl: "/avatars/andres.mp4",
     voiceId: "andres-voice-id",
     emoji: "🐱",
-    systemPrompt:
-      "Eres Profe Andrés, un artista y maestro creativo para niños de 6 a 12 años. Inspiras a los niños a expresarse a través del dibujo, la pintura, la música y manualidades. Hablas en español colombiano con alegría y creatividad desbordante. Cada niño es un artista único para ti.",
-    isActive: true,
+    systemPrompt: "Eres Profe Andrés, creativo.",
+    isActive: 1,
   },
 ];
 
-async function seed(): Promise<void> {
-  console.info("🌱 Iniciando seed de mentores...");
+async function seed() {
+  console.log("🌱 Iniciando seed...");
 
   for (const mentor of mentors) {
-    const existing = await prisma.mentor.findFirst({
-      where: { name: mentor.name },
+    // 🔍 verificar si existe
+    const existing = await db.execute({
+      sql: `SELECT id FROM Mentor WHERE name = ? LIMIT 1`,
+      args: [mentor.name],
     });
 
-    if (existing) {
-      console.info(`  ↩️  Mentor "${mentor.name}" ya existe, omitiendo...`);
+    if (existing.rows.length > 0) {
+      console.log(`↩️ ${mentor.name} ya existe`);
       continue;
     }
 
-    await prisma.mentor.create({ data: mentor });
-    console.info(`  ✅ Mentor "${mentor.name}" ${mentor.emoji} creado`);
+    // ✅ INSERT usando batch (FIX REAL)
+    await db.batch([
+      {
+        sql: `
+          INSERT INTO Mentor (
+            id, name, specialty, ageMin, ageMax,
+            avatarVideoUrl, voiceId, systemPrompt, emoji,
+            isActive, createdAt, updatedAt
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        `,
+        args: [
+          crypto.randomUUID(),
+          mentor.name,
+          mentor.specialty,
+          mentor.ageMin,
+          mentor.ageMax,
+          mentor.avatarVideoUrl,
+          mentor.voiceId,
+          mentor.systemPrompt,
+          mentor.emoji,
+          mentor.isActive,
+        ],
+      },
+    ]);
+
+    console.log(`✅ ${mentor.name} creado`);
   }
 
-  console.info("\n🎉 Seed completado. Mentores insertados:");
-  const all = await prisma.mentor.findMany({
-    select: { name: true, specialty: true, emoji: true },
-  });
-  all.forEach((m) => console.info(`  ${m.emoji} ${m.name} — ${m.specialty}`));
+  // 📊 mostrar todos
+  const all = await db.execute(`SELECT name, specialty, emoji FROM Mentor`);
 
-  await prisma.$disconnect();
+  console.log("\n🎉 Mentores en DB:");
+  for (const m of all.rows) {
+    console.log(`  ${m.emoji} ${m.name} — ${m.specialty}`);
+  }
 }
 
 seed().catch((err) => {
-  console.error("Error en seed:", err);
+  console.error("❌ Error:", err);
   process.exit(1);
 });

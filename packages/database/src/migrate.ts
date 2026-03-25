@@ -1,7 +1,11 @@
-/**
- * Script para crear las tablas en Turso directamente via libSQL.
- * Equivalente a `prisma db push` pero compatible con el URL libsql://
- */
+import dotenv from "dotenv";
+import path from "path";
+
+// 🔥 Cargar .env desde la raíz (monorepo)
+dotenv.config({
+  path: path.resolve(__dirname, "../../../.env"),
+});
+
 import { createClient } from "@libsql/client";
 
 const url = process.env["DATABASE_URL"];
@@ -9,14 +13,22 @@ const authToken = process.env["DATABASE_AUTH_TOKEN"];
 
 if (!url || !authToken) {
   console.error("❌ DATABASE_URL y DATABASE_AUTH_TOKEN son requeridos");
+  console.error("👉 Verifica que el .env esté en la raíz del proyecto");
   process.exit(1);
 }
 
-const client = createClient({ url, authToken });
+// ✅ Cliente configurado correctamente (evita bug de migrations)
+const client = createClient({
+  url,
+  authToken,
+  intMode: "number",
+  concurrency: 1,
+});
 
 const statements = `
+-- USERS
 CREATE TABLE IF NOT EXISTS "User" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "email" TEXT NOT NULL UNIQUE,
   "name" TEXT NOT NULL,
   "passwordHash" TEXT,
@@ -27,33 +39,36 @@ CREATE TABLE IF NOT EXISTS "User" (
   "updatedAt" DATETIME NOT NULL
 );
 
+-- CHILD
 CREATE TABLE IF NOT EXISTS "ChildProfile" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "parentId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
   "age" INTEGER NOT NULL,
-  "avatarEmoji" TEXT NOT NULL DEFAULT '👦',
+  "avatarEmoji" TEXT DEFAULT '👦',
   "interests" TEXT NOT NULL,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "ChildProfile_parentId_fkey" FOREIGN KEY ("parentId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("parentId") REFERENCES "User" ("id")
 );
 
+-- SUBSCRIPTION
 CREATE TABLE IF NOT EXISTS "Subscription" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "userId" TEXT NOT NULL,
   "plan" TEXT NOT NULL,
   "status" TEXT NOT NULL,
   "wompiId" TEXT,
   "periodStart" DATETIME NOT NULL,
   "periodEnd" DATETIME NOT NULL,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "Subscription_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("userId") REFERENCES "User" ("id")
 );
 
+-- COURSE
 CREATE TABLE IF NOT EXISTS "Course" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "instructorId" TEXT NOT NULL,
   "title" TEXT NOT NULL,
   "description" TEXT NOT NULL,
@@ -62,69 +77,74 @@ CREATE TABLE IF NOT EXISTS "Course" (
   "ageMax" INTEGER NOT NULL,
   "priceCop" INTEGER NOT NULL,
   "thumbnailUrl" TEXT,
-  "isPublished" INTEGER NOT NULL DEFAULT 0,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "isPublished" INTEGER DEFAULT 0,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "Course_instructorId_fkey" FOREIGN KEY ("instructorId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("instructorId") REFERENCES "User" ("id")
 );
 
+-- LESSON
 CREATE TABLE IF NOT EXISTS "Lesson" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "courseId" TEXT NOT NULL,
   "title" TEXT NOT NULL,
   "videoUrl" TEXT,
   "muxAssetId" TEXT,
-  "durationSecs" INTEGER NOT NULL DEFAULT 0,
+  "durationSecs" INTEGER DEFAULT 0,
   "order" INTEGER NOT NULL,
   "transcript" TEXT,
-  "isFree" INTEGER NOT NULL DEFAULT 0,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "isFree" INTEGER DEFAULT 0,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "Lesson_courseId_fkey" FOREIGN KEY ("courseId") REFERENCES "Course" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("courseId") REFERENCES "Course" ("id")
 );
 
+-- ENROLLMENT
 CREATE TABLE IF NOT EXISTS "Enrollment" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "childId" TEXT NOT NULL,
   "courseId" TEXT NOT NULL,
-  "progressPct" INTEGER NOT NULL DEFAULT 0,
+  "progressPct" INTEGER DEFAULT 0,
   "completedAt" DATETIME,
   "certificateUrl" TEXT,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "Enrollment_childId_fkey" FOREIGN KEY ("childId") REFERENCES "ChildProfile" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT "Enrollment_courseId_fkey" FOREIGN KEY ("courseId") REFERENCES "Course" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("childId") REFERENCES "ChildProfile" ("id"),
+  FOREIGN KEY ("courseId") REFERENCES "Course" ("id")
 );
 
+-- PAYMENTS
 CREATE TABLE IF NOT EXISTS "PaymentCop" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "userId" TEXT NOT NULL,
   "amountCop" INTEGER NOT NULL,
   "plan" TEXT,
   "courseId" TEXT,
   "method" TEXT NOT NULL,
-  "wompiRef" TEXT NOT NULL UNIQUE,
+  "wompiRef" TEXT UNIQUE,
   "status" TEXT NOT NULL,
   "paidAt" DATETIME,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "PaymentCop_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("userId") REFERENCES "User" ("id")
 );
 
+-- CHAT
 CREATE TABLE IF NOT EXISTS "ChatMessage" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "childId" TEXT NOT NULL,
   "lessonId" TEXT NOT NULL,
   "role" TEXT NOT NULL,
   "content" TEXT NOT NULL,
-  "tokensUsed" INTEGER NOT NULL DEFAULT 0,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT "ChatMessage_childId_fkey" FOREIGN KEY ("childId") REFERENCES "ChildProfile" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT "ChatMessage_lessonId_fkey" FOREIGN KEY ("lessonId") REFERENCES "Lesson" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  "tokensUsed" INTEGER DEFAULT 0,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("childId") REFERENCES "ChildProfile" ("id"),
+  FOREIGN KEY ("lessonId") REFERENCES "Lesson" ("id")
 );
 
+-- MENTOR
 CREATE TABLE IF NOT EXISTS "Mentor" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "name" TEXT NOT NULL,
   "specialty" TEXT NOT NULL,
   "ageMin" INTEGER NOT NULL,
@@ -133,58 +153,53 @@ CREATE TABLE IF NOT EXISTS "Mentor" (
   "voiceId" TEXT NOT NULL,
   "systemPrompt" TEXT NOT NULL,
   "emoji" TEXT NOT NULL,
-  "isActive" INTEGER NOT NULL DEFAULT 1,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "isActive" INTEGER DEFAULT 1,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL
 );
 
+-- SESSION
 CREATE TABLE IF NOT EXISTS "MentorSession" (
-  "id" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT PRIMARY KEY,
   "childId" TEXT NOT NULL,
   "mentorId" TEXT NOT NULL,
   "status" TEXT NOT NULL,
-  "startedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "startedAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "endedAt" DATETIME,
-  "durationSecs" INTEGER NOT NULL DEFAULT 0,
-  "scoreTotal" INTEGER NOT NULL DEFAULT 0,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "durationSecs" INTEGER DEFAULT 0,
+  "scoreTotal" INTEGER DEFAULT 0,
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
-  CONSTRAINT "MentorSession_childId_fkey" FOREIGN KEY ("childId") REFERENCES "ChildProfile" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT "MentorSession_mentorId_fkey" FOREIGN KEY ("mentorId") REFERENCES "Mentor" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY ("childId") REFERENCES "ChildProfile" ("id"),
+  FOREIGN KEY ("mentorId") REFERENCES "Mentor" ("id")
 );
 
+-- FEEDBACK
 CREATE TABLE IF NOT EXISTS "SessionFeedback" (
-  "id" TEXT NOT NULL PRIMARY KEY,
-  "sessionId" TEXT NOT NULL UNIQUE,
+  "id" TEXT PRIMARY KEY,
+  "sessionId" TEXT UNIQUE,
   "strengths" TEXT NOT NULL,
   "improvements" TEXT NOT NULL,
   "recommendations" TEXT NOT NULL,
   "sentToParentAt" DATETIME,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT "SessionFeedback_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "MentorSession" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+  "createdAt" DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("sessionId") REFERENCES "MentorSession" ("id")
 );
-`.trim();
+`;
 
 async function migrate(): Promise<void> {
   console.info("🚀 Aplicando schema a Turso...");
   console.info(`   URL: ${url}`);
 
-  for (const stmt of statements.split(";").map((s) => s.trim()).filter(Boolean)) {
-    const tableName = stmt.match(/CREATE TABLE IF NOT EXISTS "(\w+)"/)?.[1];
-    try {
-      await client.execute(stmt + ";");
-      if (tableName) console.info(`  ✅ Tabla "${tableName}" lista`);
-    } catch (err) {
-      console.error(`  ❌ Error en "${tableName ?? "unknown"}":`, err);
-      throw err;
-    }
+  try {
+    await client.executeMultiple(statements);
+    console.info("🎉 Schema aplicado exitosamente en Turso (11 tablas)");
+  } catch (err) {
+    console.error("❌ Error aplicando schema:", err);
+    process.exit(1);
+  } finally {
+    client.close();
   }
-
-  console.info("\n🎉 Schema aplicado exitosamente en Turso. 11 tablas creadas.");
-  client.close();
 }
 
-migrate().catch((err) => {
-  console.error("Error en migrate:", err);
-  process.exit(1);
-});
+migrate();
