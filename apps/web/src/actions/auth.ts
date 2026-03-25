@@ -89,6 +89,8 @@ export async function loginAction(
       switch (error.type) {
         case "CredentialsSignin":
           return { success: false, error: "Email o contraseña incorrectos" };
+        case "CallbackRouteError":
+          return { success: false, error: "Email o contraseña incorrectos" };
         default:
           return { success: false, error: "Error al iniciar sesión" };
       }
