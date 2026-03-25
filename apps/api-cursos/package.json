@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node --env-file=../../.env --require tsx/cjs --watch --watch-path=src src/server.ts",
     "build": "tsc --build",
     "start": "node dist/server.js",
     "lint": "eslint src/"
