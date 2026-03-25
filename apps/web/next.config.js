@@ -1,4 +1,4 @@
-// Cargar .env desde la raíz del monorepo
+// Cargar .env desde la raíz del monorepo (Next.js busca solo en apps/web/)
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -18,44 +18,45 @@ const nextConfig = {
       "@prisma/adapter-libsql",
       "@libsql/client",
       "@libsql/hrana-client",
+      "@libsql/isomorphic-fetch",
+      "@libsql/isomorphic-ws",
       "@neuralpath/database",
       "bcryptjs",
     ],
   },
   webpack: (config, { isServer }) => {
-    if (!isServer) {
-      // Marcar todos los paquetes Node.js como externos en el cliente
-      const originalExternals = config.externals || [];
-      config.externals = [
-        ...(Array.isArray(originalExternals) ? originalExternals : [originalExternals]),
-        "@libsql/client",
-        "@libsql/hrana-client",
-        "@prisma/client",
-        "@prisma/adapter-libsql",
-        "@neuralpath/database",
-      ];
+    // Externalizar TODOS los paquetes @libsql/* en server Y client
+    const libsqlExternal = ({ request }, callback) => {
+      if (request && request.startsWith("@libsql/")) {
+        return callback(null, `commonjs ${request}`);
+      }
+      callback();
+    };
 
-      // Fallbacks para módulos Node.js que no existen en el browser
+    if (Array.isArray(config.externals)) {
+      config.externals.push(libsqlExternal);
+    } else {
+      config.externals = [libsqlExternal];
+    }
+
+    if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
-        fs: false,
-        net: false,
-        tls: false,
-        crypto: false,
-        path: false,
-        os: false,
-        stream: false,
-        buffer: false,
-        http: false,
-        https: false,
-        zlib: false,
+        fs: false, net: false, tls: false, crypto: false,
+        path: false, os: false, stream: false, buffer: false,
       };
     }
 
-    // Ignorar archivos que webpack no puede parsear en node_modules
-    config.module.rules.push(
-      { test: /\.md$/, use: "null-loader" },
-    );
+    // Ignorar archivos de texto que no son código (README, LICENSE, NOTICE, CHANGELOG)
+    config.module.rules.push({
+      test: /node_modules[\\/].*(README|LICENSE|NOTICE|CHANGELOG|AUTHORS)(\.md|\.txt)?$/,
+      use: "null-loader",
+    });
+    // También ignorar archivos .md y .txt en general dentro de node_modules
+    config.module.rules.push({
+      test: /node_modules[\\/].*\.(md|txt|LICENSE)$/,
+      use: "null-loader",
+    });
 
     return config;
   },
