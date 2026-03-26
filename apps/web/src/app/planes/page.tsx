@@ -131,7 +131,7 @@ export default function PlanesPage() {
       <nav className="bg-white/80 backdrop-blur-md border-b border-gray-100 sticky top-0 z-30 px-4 py-3">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <Link
-            href="/dashboard"
+            href="/dashboard/padre"
             className="flex items-center gap-1.5 text-sm font-body font-semibold text-slate-600 hover:text-brand-600 transition-colors"
           >
             ← Volver al dashboard
