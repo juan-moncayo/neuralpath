@@ -30,7 +30,7 @@ Dos módulos: **Marketplace de cursos en video** + **MentorAI** (tutor IA con av
 # Instalar dependencias
 pnpm install
 
-# Desarrollo (levanta web :3000 y api-cursos :3001)
+# Desarrollo (levanta web :3002 y api-cursos :3001)
 pnpm dev
 
 # Build de producción
@@ -40,8 +40,6 @@ pnpm build
 pnpm db:push       # Crea las 11 tablas en Turso vía libSQL
 pnpm db:seed       # Inserta los 6 mentores iniciales
 pnpm db:studio     # Prisma Studio (GUI) — usar con DATABASE_URL=file:./local.db
-# Nota: db:push usa src/migrate.ts (SQL directo) porque Prisma CLI
-# requiere file:// para sqlite pero Turso usa libsql://
 
 # Redis (Docker)
 docker compose up -d redis
@@ -59,45 +57,154 @@ pnpm --filter @neuralpath/api-cursos dev
 
 ```
 neuralpath/
-├── CLAUDE.md                    ← Este archivo
+├── CLAUDE.md
 ├── .env                         ← Variables de entorno (no commitear)
-├── .env.example                 ← Plantilla sin valores reales
-├── package.json                 ← Root pnpm workspaces
-├── turbo.json                   ← Configuración Turborepo
+├── .env.example
+├── package.json
+├── turbo.json
 ├── docker-compose.yml           ← Redis en puerto 6379
 │
 ├── apps/
-│   ├── web/                     ← Next.js 14 (puerto 3000)
+│   ├── web/                     ← Next.js 14 (puerto 3002)
 │   │   └── src/
 │   │       ├── app/
-│   │       │   ├── (auth)/      ← Rutas de auth (login, registro, onboarding...)
-│   │       │   ├── (dashboard)/ ← Dashboard protegido por middleware
-│   │       │   └── api/auth/    ← Route handler NextAuth
-│   │       ├── actions/         ← Server Actions (formularios)
-│   │       ├── components/      ← Componentes React
-│   │       ├── lib/             ← auth.ts, utils.ts
-│   │       ├── middleware.ts    ← Protección de rutas
-│   │       └── types/           ← Extensiones de tipos
+│   │       │   ├── (auth)/      ← login, registro, onboarding
+│   │       │   ├── (dashboard)/ ← /dashboard/* (protegido)
+│   │       │   │   └── dashboard/
+│   │       │   │       ├── page.tsx         → /dashboard
+│   │       │   │       ├── cursos/page.tsx  → /dashboard/cursos ✅ datos reales
+│   │       │   │       ├── mentores/page.tsx → /dashboard/mentores
+│   │       │   │       ├── progreso/page.tsx → /dashboard/progreso
+│   │       │   │       └── cuenta/page.tsx   → /dashboard/cuenta
+│   │       │   ├── cursos/
+│   │       │   │   ├── page.tsx             → /cursos (catálogo público) ✅
+│   │       │   │   └── [id]/
+│   │       │   │       ├── page.tsx         → /cursos/:id (detalle) ✅
+│   │       │   │       └── leccion/[lessonId]/page.tsx → reproductor + chatbot ✅
+│   │       │   ├── instructor/page.tsx      → /instructor (panel instructor) ✅
+│   │       │   ├── planes/page.tsx          → /planes (Wompi checkout) ✅
+│   │       │   ├── checkout/resultado/page.tsx → resultado del pago ✅
+│   │       │   └── api/auth/               ← Route handler NextAuth
+│   │       ├── actions/
+│   │       ├── components/
+│   │       ├── lib/
+│   │       ├── middleware.ts
+│   │       └── types/
 │   │
-│   ├── api-cursos/              ← Fastify (puerto 3001)
+│   ├── api-cursos/              ← Fastify (puerto 3001) ✅ COMPLETO
 │   │   └── src/
-│   │       ├── routes/          ← /health, /courses, /lessons
-│   │       └── server.ts        ← Bootstrap de Fastify
+│   │       ├── middleware/
+│   │       │   └── plan-guard.ts    ← requirePlan, requireEnrollment
+│   │       ├── routes/
+│   │       │   ├── health.ts
+│   │       │   ├── courses.ts       ← GET/POST/PUT /api/courses
+│   │       │   ├── lessons.ts       ← POST/PUT /api/lessons + GET /watch + upload-url
+│   │       │   ├── enrollments.ts   ← POST/PUT/GET /api/enrollments
+│   │       │   ├── chat.ts          ← POST /api/chat/lesson/:id
+│   │       │   ├── payments.ts      ← POST/GET /api/payments
+│   │       │   └── webhooks.ts      ← POST /api/webhooks/mux
+│   │       ├── services/
+│   │       │   ├── mux.ts           ← createUploadUrl, getAssetStatus
+│   │       │   └── wompi.ts         ← buildCheckoutUrl, verifyWebhook
+│   │       └── server.ts
 │   │
-│   └── api-mentor/              ← Fastify MentorAI (puerto 3002) — En construcción
-│       └── README.md
+│   └── api-mentor/              ← En construcción (puerto 3002)
 │
 └── packages/
-    ├── database/                ← Prisma + cliente Turso libSQL
-    │   ├── prisma/schema.prisma ← 11 modelos
-    │   └── src/
-    │       ├── client.ts        ← PrismaClient singleton con adaptador libSQL
-    │       ├── seed.ts          ← Inserta 6 mentores
-    │       └── index.ts         ← Re-exporta prisma + tipos
-    │
-    ├── ui/                      ← Componentes compartidos (Button, Card, cn)
-    └── config/                  ← Base tsconfig, eslint, tailwind
+    ├── database/                ← Prisma + Turso libSQL
+    ├── ui/
+    └── config/
 ```
+
+---
+
+## Endpoints de API — api-cursos (:3001)
+
+### Cursos
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `GET` | `/api/courses` | Lista pública de cursos publicados (filtros: category, ageMin, ageMax, search, page, limit) |
+| `GET` | `/api/courses/:id` | Detalle del curso con lecciones ordenadas |
+| `POST` | `/api/courses` | Crear curso (solo instructor, header x-user-role) |
+| `PUT` | `/api/courses/:id` | Editar curso |
+| `POST` | `/api/courses/:id/publish` | Toggle isPublished (requiere ≥1 lección) |
+| `GET` | `/api/courses/instructor/:userId` | Cursos del instructor |
+
+### Lecciones
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/lessons/courses/:courseId` | Crear lección |
+| `PUT` | `/api/lessons/:id` | Editar lección (título, transcript, isFree, order) |
+| `GET` | `/api/lessons/:id/watch` | Video URL (verifica isFree o enrollment) |
+| `POST` | `/api/lessons/:id/upload-url` | Genera URL de subida Mux |
+
+### Inscripciones
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/enrollments` | Inscribir niño a curso (body: childId, courseId) |
+| `PUT` | `/api/enrollments/:id/progress` | Actualizar progressPct (100 → setea completedAt) |
+| `GET` | `/api/enrollments/child/:childId` | Lista de cursos del niño con progreso |
+
+### Chat IA
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/chat/lesson/:lessonId` | Pregunta al chatbot (GPT-4o-mini, rate limit 20/día con Redis) |
+
+### Pagos Wompi
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/payments/checkout` | Genera checkout Wompi (plan premium/pro) |
+| `POST` | `/api/payments/webhook` | Webhook Wompi (APPROVED/DECLINED) |
+| `GET` | `/api/payments/verify/:reference` | Consulta estado (fallback si webhook tardó) |
+
+### Webhooks
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/webhooks/mux` | Procesa video.asset.ready (actualiza videoUrl) y video.asset.errored |
+
+### Auth de API
+Los headers requeridos por la API (auth simplificada):
+- `x-user-id` — ID del usuario autenticado
+- `x-user-role` — `parent | child | instructor | admin`
+- `x-user-plan` — `free | premium | pro`
+- `x-child-id` — ID del perfil del niño (para operaciones del niño)
+
+---
+
+## Páginas del Frontend
+
+| Ruta | Tipo | Descripción |
+|------|------|-------------|
+| `/cursos` | Client | Catálogo público con filtros (categoría, edad, búsqueda con debounce) |
+| `/cursos/:id` | Server | Detalle del curso, lista de lecciones con 🔒 |
+| `/cursos/:id/leccion/:lessonId` | Client | Reproductor video + sidebar lecciones + chatbot IA |
+| `/planes` | Client | 3 planes con precios COP + checkout Wompi |
+| `/checkout/resultado` | Client | Estado del pago + polling cada 30s (máx 5 veces) |
+| `/instructor` | Client | Panel del instructor (crear/publicar cursos + lecciones) |
+| `/dashboard/cursos` | Server | Cursos reales del niño con barra de progreso |
+
+---
+
+## Servicios Externos Integrados
+
+### Mux (video)
+- `createUploadUrl()` — genera URL de subida directa
+- `getAssetStatus()` — consulta estado del asset
+- `buildStreamUrl()` — construye URL HLS: `https://stream.mux.com/{playbackId}.m3u8`
+- Webhook: `video.asset.ready` → actualiza `lesson.videoUrl`
+
+### Wompi (pagos COP — Sandbox)
+- `buildCheckoutUrl()` — genera URL de checkout con integrity hash SHA256
+- `verifyWebhookSignature()` — valida firma del webhook
+- `getTransactionByReference()` — consulta estado de pago
+- `copToCents()` — convierte COP a centavos (Wompi usa centavos)
+- Variables: `WOMPI_PUBLIC_KEY`, `WOMPI_PRIVATE_KEY`, `WOMPI_INTEGRITY_KEY`, `WOMPI_EVENTS_SECRET`
+
+### OpenAI GPT-4o-mini (chat)
+- Respuestas en máximo 3 oraciones simples para niños
+- RAG sin pgvector: chunks de 500 chars + `includes()` para encontrar contexto relevante
+- Rate limit: 20 consultas/día por niño vía Redis
+- Fallback si OpenAI falla: respuesta predefinida amigable
 
 ---
 
@@ -169,7 +276,7 @@ Reporte automático de una sesión: `strengths`, `improvements`, `recommendation
 6. **Server Actions** de Next.js para todos los formularios del frontend.
 7. **TypeScript estricto** — cero `any`, validación Zod en todos los endpoints.
 8. **Edad mínima**: 6 años. Edad máxima: 14 años. El contenido se adapta al rango.
-9. **Rate limiting** en API: 100 req/min por IP.
+9. **Rate limiting** en API: 100 req/min por IP. Chat: 20 preguntas/día por niño.
 10. **Auth**: email + bcrypt (salt 12) o Google OAuth. JWT access 15min + refresh 7d.
 
 ---
@@ -207,12 +314,14 @@ Niño habla (micrófono)
 Ver `.env.example` para la lista completa. Las críticas son:
 
 - `DATABASE_URL` + `DATABASE_AUTH_TOKEN` — Turso
-- `AUTH_SECRET` — NextAuth (generar con `openssl rand -base64 32`)
+- `AUTH_SECRET` — NextAuth
 - `AUTH_GOOGLE_ID` + `AUTH_GOOGLE_SECRET` — Google OAuth
-- `RESEND_API_KEY` — Emails de recuperación
-- `OPENAI_API_KEY` — GPT-4 + Whisper
+- `RESEND_API_KEY` — Emails
+- `OPENAI_API_KEY` — GPT-4o-mini (chat) + Whisper
 - `ELEVENLABS_API_KEY` — TTS
-- `WOMPI_PUBLIC_KEY` + `WOMPI_PRIVATE_KEY` — Pagos COP
+- `WOMPI_PUBLIC_KEY` + `WOMPI_PRIVATE_KEY` + `WOMPI_INTEGRITY_KEY` + `WOMPI_EVENTS_SECRET` — Pagos
+- `MUX_TOKEN_ID` + `MUX_TOKEN_SECRET` — Videos
+- `REDIS_URL` — Cache (default: redis://localhost:6379)
 
 ---
 
@@ -224,3 +333,14 @@ Ver `.env.example` para la lista completa. Las críticas son:
 - **API routes Fastify**: sufijo `Routes` (ej: `coursesRoutes`)
 - **Imports**: siempre `@/*` para `apps/web/src`, nunca rutas relativas largas
 - **Errores**: nunca usar `throw` sin capturar en Server Actions — siempre retornar `{ success: false, error: string }`
+
+---
+
+## Pendiente / Por construir
+
+- **Pipeline MentorAI completo**: Whisper → GPT-4 → ElevenLabs → D-ID (api-mentor en :3002)
+- **auth real en api-cursos**: actualmente usa headers x-user-id en lugar de JWT verificado
+- **Subida de video en el instructor**: el upload-url está listo, falta el componente de drag & drop
+- **Panel de progreso** (`/dashboard/progreso`): datos reales de sesiones y horas
+- **Notificaciones de email**: feedback de sesión MentorAI al padre (Plan Pro)
+- **Certificados**: generación de PDF al completar curso

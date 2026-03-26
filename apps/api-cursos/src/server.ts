@@ -4,6 +4,10 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { coursesRoutes } from "./routes/courses";
 import { lessonsRoutes } from "./routes/lessons";
+import { enrollmentsRoutes } from "./routes/enrollments";
+import { chatRoutes } from "./routes/chat";
+import { webhooksRoutes } from "./routes/webhooks";
+import { paymentsRoutes } from "./routes/payments";
 import { healthRoutes } from "./routes/health";
 
 const PORT = parseInt(process.env["API_CURSOS_PORT"] ?? "3001", 10);
@@ -20,14 +24,12 @@ const app = Fastify({
 });
 
 async function bootstrap(): Promise<void> {
-  // Security
-  await app.register(helmet, {
-    contentSecurityPolicy: false,
-  });
+  await app.register(helmet, { contentSecurityPolicy: false });
 
   await app.register(cors, {
     origin: [
       process.env["NEXT_PUBLIC_APP_URL"] ?? "http://localhost:3000",
+      "http://localhost:3002",
     ],
     credentials: true,
   });
@@ -46,6 +48,10 @@ async function bootstrap(): Promise<void> {
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(coursesRoutes, { prefix: "/api/courses" });
   await app.register(lessonsRoutes, { prefix: "/api/lessons" });
+  await app.register(enrollmentsRoutes, { prefix: "/api/enrollments" });
+  await app.register(chatRoutes, { prefix: "/api/chat" });
+  await app.register(webhooksRoutes, { prefix: "/api/webhooks" });
+  await app.register(paymentsRoutes, { prefix: "/api/payments" });
 
   // Global error handler
   app.setErrorHandler((error, _request, reply) => {
