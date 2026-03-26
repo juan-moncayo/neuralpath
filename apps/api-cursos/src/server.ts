@@ -8,6 +8,7 @@ import { enrollmentsRoutes } from "./routes/enrollments";
 import { chatRoutes } from "./routes/chat";
 import { webhooksRoutes } from "./routes/webhooks";
 import { paymentsRoutes } from "./routes/payments";
+import { childrenRoutes } from "./routes/children";
 import { healthRoutes } from "./routes/health";
 
 const PORT = parseInt(process.env["API_CURSOS_PORT"] ?? "3001", 10);
@@ -52,6 +53,7 @@ async function bootstrap(): Promise<void> {
   await app.register(chatRoutes, { prefix: "/api/chat" });
   await app.register(webhooksRoutes, { prefix: "/api/webhooks" });
   await app.register(paymentsRoutes, { prefix: "/api/payments" });
+  await app.register(childrenRoutes, { prefix: "/api/children" });
 
   // Global error handler
   app.setErrorHandler((error, _request, reply) => {

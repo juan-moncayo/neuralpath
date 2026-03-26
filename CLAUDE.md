@@ -69,13 +69,22 @@ neuralpath/
 │   │   └── src/
 │   │       ├── app/
 │   │       │   ├── (auth)/      ← login, registro, onboarding
-│   │       │   ├── (dashboard)/ ← /dashboard/* (protegido)
+│   │       │   ├── (dashboard)/ ← auth guard raíz (solo verifica session)
 │   │       │   │   └── dashboard/
-│   │       │   │       ├── page.tsx         → /dashboard
-│   │       │   │       ├── cursos/page.tsx  → /dashboard/cursos ✅ datos reales
-│   │       │   │       ├── mentores/page.tsx → /dashboard/mentores
-│   │       │   │       ├── progreso/page.tsx → /dashboard/progreso
-│   │       │   │       └── cuenta/page.tsx   → /dashboard/cuenta
+│   │       │   │       ├── page.tsx         → /dashboard → redirect /dashboard/padre
+│   │       │   │       ├── padre/           ← Dashboard del padre/tutor
+│   │       │   │       │   ├── layout.tsx   → sidebar oscuro + header del padre
+│   │       │   │       │   ├── page.tsx     → /dashboard/padre (selector de hijos) ✅
+│   │       │   │       │   ├── pagos/       → /dashboard/padre/pagos ✅
+│   │       │   │       │   ├── plan/        → /dashboard/padre/plan ✅
+│   │       │   │       │   ├── feedback/    → /dashboard/padre/feedback ✅
+│   │       │   │       │   └── cuenta/      → /dashboard/padre/cuenta ✅
+│   │       │   │       └── nino/            ← Dashboard del niño
+│   │       │   │           ├── layout.tsx   → lee cookie activeChildId, guard redirect
+│   │       │   │           ├── inicio/      → /dashboard/nino/inicio ✅ datos reales
+│   │       │   │           ├── cursos/      → /dashboard/nino/cursos ✅ datos reales
+│   │       │   │           ├── mentores/    → /dashboard/nino/mentores ✅
+│   │       │   │           └── progreso/    → /dashboard/nino/progreso ✅
 │   │       │   ├── cursos/
 │   │       │   │   ├── page.tsx             → /cursos (catálogo público) ✅
 │   │       │   │   └── [id]/
@@ -86,8 +95,20 @@ neuralpath/
 │   │       │   ├── checkout/resultado/page.tsx → resultado del pago ✅
 │   │       │   └── api/auth/               ← Route handler NextAuth
 │   │       ├── actions/
+│   │       │   ├── auth.ts      ← login, register, logout, onboarding
+│   │       │   └── children.ts  ← createChild, enterChildProfile, exitChildProfile
 │   │       ├── components/
+│   │       │   └── dashboard/
+│   │       │       ├── PadreSidebar.tsx    ← sidebar oscuro del padre
+│   │       │       ├── NinoSidebar.tsx     ← sidebar colorido del niño
+│   │       │       ├── NinoHeader.tsx      ← header del niño + botón salir perfil
+│   │       │       ├── DashboardHeader.tsx ← header del padre
+│   │       │       └── AddChildModal.tsx   ← modal para agregar hijo
+│   │       ├── context/
 │   │       ├── lib/
+│   │       │   ├── auth.ts         ← NextAuth config
+│   │       │   ├── active-child.ts ← cookie helpers (get/set/clear activeChildId)
+│   │       │   └── utils.ts        ← cn, formatCop, getPlanLabel
 │   │       ├── middleware.ts
 │   │       └── types/
 │   │
@@ -173,6 +194,7 @@ Los headers requeridos por la API (auth simplificada):
 
 ## Páginas del Frontend
 
+### Públicas
 | Ruta | Tipo | Descripción |
 |------|------|-------------|
 | `/cursos` | Client | Catálogo público con filtros (categoría, edad, búsqueda con debounce) |
@@ -181,7 +203,30 @@ Los headers requeridos por la API (auth simplificada):
 | `/planes` | Client | 3 planes con precios COP + checkout Wompi |
 | `/checkout/resultado` | Client | Estado del pago + polling cada 30s (máx 5 veces) |
 | `/instructor` | Client | Panel del instructor (crear/publicar cursos + lecciones) |
-| `/dashboard/cursos` | Server | Cursos reales del niño con barra de progreso |
+
+### Dashboard del Padre (`/dashboard/padre/*`)
+| Ruta | Descripción |
+|------|-------------|
+| `/dashboard/padre` | Hub selector de hijos — "¿Quién va a aprender hoy?" |
+| `/dashboard/padre/pagos` | Historial de pagos Wompi con badges de estado |
+| `/dashboard/padre/plan` | Plan activo + comparativa + upgrade a Wompi |
+| `/dashboard/padre/feedback` | Feedback de sesiones MentorAI (completo solo Plan Pro) |
+| `/dashboard/padre/cuenta` | Información de la cuenta + cerrar sesión |
+
+### Dashboard del Niño (`/dashboard/nino/*`)
+| Ruta | Descripción |
+|------|-------------|
+| `/dashboard/nino/inicio` | Bienvenida + resumen (cursos activos, sesiones, score) |
+| `/dashboard/nino/cursos` | Cursos inscritos con barra de progreso real |
+| `/dashboard/nino/mentores` | 6 mentores IA + sesiones disponibles (EE-M08) |
+| `/dashboard/nino/progreso` | Cursos completados + historial sesiones + logros |
+
+### Flujo de navegación
+```
+Login → /dashboard → /dashboard/padre (hub de hijos)
+  → Clic "Entrar como Sofía" → guarda cookie activeChildId (8h) → /dashboard/nino/inicio
+  → Botón "Salir del perfil" → borra cookie → /dashboard/padre
+```
 
 ---
 
