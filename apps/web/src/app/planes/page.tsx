@@ -127,6 +127,19 @@ export default function PlanesPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-violet-50/30">
+      {/* Navbar */}
+      <nav className="bg-white/80 backdrop-blur-md border-b border-gray-100 sticky top-0 z-30 px-4 py-3">
+        <div className="max-w-5xl mx-auto flex items-center justify-between">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-1.5 text-sm font-body font-semibold text-slate-600 hover:text-brand-600 transition-colors"
+          >
+            ← Volver al dashboard
+          </Link>
+          <span className="font-display text-brand-600 text-sm">NeuralPath</span>
+        </div>
+      </nav>
+
       {/* Hero */}
       <div className="bg-gradient-to-r from-brand-500 to-violet-600 text-white py-14 px-4 text-center">
         <h1 className="font-display text-4xl md:text-5xl mb-3">
