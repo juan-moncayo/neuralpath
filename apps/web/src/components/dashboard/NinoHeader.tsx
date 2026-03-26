@@ -19,12 +19,7 @@ export default function NinoHeader({ childName, childEmoji }: Props) {
           </p>
         </div>
 
-        <form
-          action={async () => {
-            "use server";
-            await exitChildProfileAction();
-          }}
-        >
+        <form action={exitChildProfileAction}>
           <button
             type="submit"
             className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-body font-semibold text-slate-500 hover:bg-gray-100 transition-colors"
