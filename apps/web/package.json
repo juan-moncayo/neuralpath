@@ -15,6 +15,7 @@
     "@neuralpath/database": "workspace:*",
     "@neuralpath/ui": "workspace:*",
     "bcryptjs": "^2.4.3",
+    "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "lucide-react": "^0.378.0",
     "next": "^14.2.3",
@@ -29,6 +30,7 @@
   "devDependencies": {
     "@neuralpath/config": "workspace:*",
     "@types/bcryptjs": "^2.4.6",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^20.13.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.0",

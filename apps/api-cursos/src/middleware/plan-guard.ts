@@ -9,23 +9,29 @@ const PLAN_HIERARCHY: Record<UserPlan, number> = {
   pro: 2,
 };
 
-/** Extrae userId y plan del header x-user-id / x-user-plan enviados por el frontend */
-export function getUserFromHeaders(request: FastifyRequest): {
+export interface JwtPayload {
   userId: string;
-  plan: UserPlan;
   role: string;
-} | null {
-  const userId = request.headers["x-user-id"] as string | undefined;
-  const plan = (request.headers["x-user-plan"] as string | undefined) ?? "free";
-  const role = (request.headers["x-user-role"] as string | undefined) ?? "parent";
+  plan: UserPlan;
+}
 
-  if (!userId) return null;
-
-  return {
-    userId,
-    plan: (plan as UserPlan) ?? "free",
-    role,
-  };
+/** Verifica el Bearer JWT del header Authorization usando @fastify/jwt */
+export async function getUserFromJWT(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<JwtPayload | null> {
+  try {
+    await request.jwtVerify();
+    const payload = request.user as JwtPayload;
+    if (!payload?.userId) {
+      await reply.status(401).send({ error: "Token inválido", code: "INVALID_TOKEN" });
+      return null;
+    }
+    return payload;
+  } catch {
+    await reply.status(401).send({ error: "No autorizado — token requerido", code: "UNAUTHORIZED" });
+    return null;
+  }
 }
 
 /** Verifica que el usuario tenga al menos el plan requerido */
@@ -34,25 +40,16 @@ export async function requirePlan(
   reply: FastifyReply,
   requiredPlan: UserPlan
 ): Promise<boolean> {
-  const user = getUserFromHeaders(request);
+  const user = await getUserFromJWT(request, reply);
+  if (!user) return false;
 
-  if (!user) {
-    await reply.status(401).send({
-      error: "No autorizado",
-      code: "UNAUTHORIZED",
-    });
-    return false;
-  }
-
-  // También verificar en BD que la suscripción esté activa
   const userRecord = await prisma.user.findUnique({
     where: { id: user.userId },
     select: { plan: true },
   });
 
   const currentPlan = (userRecord?.plan ?? "free") as UserPlan;
-  const hasAccess =
-    PLAN_HIERARCHY[currentPlan] >= PLAN_HIERARCHY[requiredPlan];
+  const hasAccess = PLAN_HIERARCHY[currentPlan] >= PLAN_HIERARCHY[requiredPlan];
 
   if (!hasAccess) {
     await reply.status(403).send({
@@ -76,10 +73,7 @@ export async function requireEnrollment(
   const childId = request.headers["x-child-id"] as string | undefined;
 
   if (!childId) {
-    await reply.status(403).send({
-      error: "Se requiere perfil del niño",
-      code: "CHILD_REQUIRED",
-    });
+    await reply.status(403).send({ error: "Se requiere perfil del niño", code: "CHILD_REQUIRED" });
     return false;
   }
 
@@ -88,10 +82,7 @@ export async function requireEnrollment(
   });
 
   if (!enrollment) {
-    await reply.status(403).send({
-      error: "No estás inscrito en este curso",
-      code: "NOT_ENROLLED",
-    });
+    await reply.status(403).send({ error: "No estás inscrito en este curso", code: "NOT_ENROLLED" });
     return false;
   }
 

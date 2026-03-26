@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import fjwt from "@fastify/jwt";
 import { coursesRoutes } from "./routes/courses";
 import { lessonsRoutes } from "./routes/lessons";
 import { enrollmentsRoutes } from "./routes/enrollments";
@@ -33,6 +34,10 @@ async function bootstrap(): Promise<void> {
       "http://localhost:3002",
     ],
     credentials: true,
+  });
+
+  await app.register(fjwt, {
+    secret: process.env["JWT_SECRET"] ?? process.env["AUTH_SECRET"] ?? "fallback-secret",
   });
 
   await app.register(rateLimit, {

@@ -21,6 +21,7 @@ Dos módulos: **Marketplace de cursos en video** + **MentorAI** (tutor IA con av
 | Videos | Mux |
 | Pagos | Wompi (COP) |
 | IA/Voz | OpenAI GPT-4, Whisper STT, ElevenLabs TTS, D-ID avatars |
+| api-mentor | FastAPI (Python) — puerto 3003 |
 
 ---
 
@@ -49,6 +50,13 @@ pnpm --filter @neuralpath/web dev
 
 # Solo api-cursos
 pnpm --filter @neuralpath/api-cursos dev
+
+# api-mentor (FastAPI — Python)
+cd apps/api-mentor
+pip install -r requirements.txt
+uvicorn main:app --port 3003 --reload
+# O desde la raíz:
+python -m uvicorn apps.api-mentor.main:app --port 3003 --reload
 ```
 
 ---
@@ -129,7 +137,20 @@ neuralpath/
 │   │       │   └── wompi.ts         ← buildCheckoutUrl, verifyWebhook
 │   │       └── server.ts
 │   │
-│   └── api-mentor/              ← En construcción (puerto 3002)
+│   └── api-mentor/              ← FastAPI (Python, puerto 3003) ✅ COMPLETO
+│       ├── main.py              ← FastAPI app + CORS + endpoints HTTP + WebSocket
+│       ├── requirements.txt
+│       ├── .env.example
+│       ├── db/
+│       │   └── turso.py         ← Cliente libsql: get_mentor, get_child, create_session, etc.
+│       ├── middleware/
+│       │   └── auth.py          ← verify_jwt(token) → dict | WebSocketException(4001)
+│       └── api/
+│           ├── stt.py           ← STTService: Whisper + fallback Deepgram
+│           ├── llm.py           ← LLMService: GPT-4-turbo + gpt-4o-mini fallback
+│           ├── tts.py           ← TTSService: ElevenLabs + graceful no-audio fallback
+│           ├── sessions.py      ← WebSocket handler: STT→LLM→TTS pipeline
+│           └── email.py         ← send_feedback_email() con Resend (3 reintentos)
 │
 └── packages/
     ├── database/                ← Prisma + Turso libSQL
@@ -221,12 +242,52 @@ Los headers requeridos por la API (auth simplificada):
 | `/dashboard/nino/mentores` | 6 mentores IA + sesiones disponibles (EE-M08) |
 | `/dashboard/nino/progreso` | Cursos completados + historial sesiones + logros |
 
+### Sesión MentorAI (`/dashboard/nino/mentores/*`)
+| Ruta | Descripción |
+|------|-------------|
+| `/dashboard/nino/mentores` | Grid de mentores filtrados por edad del niño + sesiones disponibles |
+| `/dashboard/nino/mentores/sesion/[mentorId]` | Sala de videollamada — mic, subtítulos, conversación en tiempo real |
+| `/dashboard/nino/mentores/sesion/[mentorId]/resultado` | Score final, confeti (≥90), reporte enviado al padre |
+
 ### Flujo de navegación
 ```
 Login → /dashboard → /dashboard/padre (hub de hijos)
   → Clic "Entrar como Sofía" → guarda cookie activeChildId (8h) → /dashboard/nino/inicio
   → Botón "Salir del perfil" → borra cookie → /dashboard/padre
+
+Sesión MentorAI:
+  /dashboard/nino/mentores → clic "Practicar" → /dashboard/nino/mentores/sesion/[mentorId]
+  → mic check → WebSocket ws://localhost:3003/ws/session/{mentorId}
+  → auth → session_ready → conversación → end_session
+  → /dashboard/nino/mentores/sesion/[mentorId]/resultado?score=X&duration=Y
 ```
+
+---
+
+## Endpoints de API — api-mentor (:3003)
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `GET` | `/health` | `{ status: "ok", service: "api-mentor" }` |
+| `GET` | `/mentors` | Lista mentores activos desde Turso |
+| `GET` | `/sessions/child/{child_id}` | Historial de sesiones del niño (últimas 20) |
+| `WS` | `/ws/session/{mentor_id}` | WebSocket: pipeline STT → LLM → TTS |
+
+### Protocolo WebSocket `/ws/session/{mentor_id}`
+
+**Cliente → Servidor:**
+- `{ type: "auth", token: "jwt...", childId: "xxx" }`
+- `{ type: "audio_chunk", data: "<base64 webm>" }`
+- `{ type: "end_session" }`
+
+**Servidor → Cliente:**
+- `{ type: "session_ready", sessionId, mentorName, mentorEmoji, greeting }`
+- `{ type: "transcript", text }` — lo que dijo el niño
+- `{ type: "mentor_text", text }` — respuesta del mentor
+- `{ type: "mentor_audio", data: "<base64 mp3>", text }` — audio ElevenLabs
+- `{ type: "latency", stt_ms, llm_ms, tts_ms, total_ms }`
+- `{ type: "session_ended", score, duration_secs, message }`
+- `{ type: "error", code: "AUTH_FAILED|LIMIT_REACHED", message }`
 
 ---
 
@@ -367,6 +428,10 @@ Ver `.env.example` para la lista completa. Las críticas son:
 - `WOMPI_PUBLIC_KEY` + `WOMPI_PRIVATE_KEY` + `WOMPI_INTEGRITY_KEY` + `WOMPI_EVENTS_SECRET` — Pagos
 - `MUX_TOKEN_ID` + `MUX_TOKEN_SECRET` — Videos
 - `REDIS_URL` — Cache (default: redis://localhost:6379)
+- `JWT_SECRET` — Mismo valor que `AUTH_SECRET`. Usado por api-cursos (@fastify/jwt) y api-mentor (python-jose) para verificar tokens
+- `ELEVENLABS_VOICE_LUNA` / `VOICE_MAX` / `VOICE_SOFIA` / `VOICE_CARLOS` / `VOICE_VALERIA` / `VOICE_ANDRES` — Voice IDs de ElevenLabs (opcionales — sin ellos el pipeline funciona sin audio)
+- `NEXTJS_URL` — URL del frontend para CORS en api-mentor (default: http://localhost:3002)
+- `DEEPGRAM_API_KEY` — Fallback STT si Whisper falla (opcional)
 
 ---
 
@@ -383,9 +448,6 @@ Ver `.env.example` para la lista completa. Las críticas son:
 
 ## Pendiente / Por construir
 
-- **Pipeline MentorAI completo**: Whisper → GPT-4 → ElevenLabs → D-ID (api-mentor en :3002)
-- **auth real en api-cursos**: actualmente usa headers x-user-id en lugar de JWT verificado
 - **Subida de video en el instructor**: el upload-url está listo, falta el componente de drag & drop
-- **Panel de progreso** (`/dashboard/progreso`): datos reales de sesiones y horas
-- **Notificaciones de email**: feedback de sesión MentorAI al padre (Plan Pro)
 - **Certificados**: generación de PDF al completar curso
+- **Auth JWT en api-cursos**: migrar rutas de x-user-id headers a Bearer JWT verificado en todas las rutas (actualmente solo plan-guard usa JWT; las rutas individuales aún leen headers en algunos casos)
