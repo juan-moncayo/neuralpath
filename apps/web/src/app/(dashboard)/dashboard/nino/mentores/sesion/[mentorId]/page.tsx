@@ -3,13 +3,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Mic, MicOff, PhoneOff, Loader2 } from "lucide-react";
+import { Mic, MicOff, PhoneOff, Loader2, WifiOff } from "lucide-react";
 
 const API_MENTOR_URL =
   process.env["NEXT_PUBLIC_API_MENTOR_URL"] ?? "http://localhost:3003";
 const WS_URL = API_MENTOR_URL.replace(/^http/, "ws");
 
-type Phase = "mic_check" | "connecting" | "active" | "ended";
+// NEUR-77: máximo de reintentos de reconexión
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS = 3000;
+// Heartbeat cada 20s para detectar desconexión rápido
+const HEARTBEAT_INTERVAL_MS = 20000;
+
+type Phase = "mic_check" | "connecting" | "active" | "reconnecting" | "ended";
 
 interface ConvEntry {
   role: "mentor" | "child";
@@ -32,7 +38,6 @@ export default function SesionPage() {
   const [transcript, setTranscript] = useState("");
   const [mentorText, setMentorText] = useState("");
   const [conversation, setConversation] = useState<ConvEntry[]>([]);
-  const [score, setScore] = useState(0);
   const [elapsedSecs, setElapsedSecs] = useState(0);
   const [isMentorSpeaking, setIsMentorSpeaking] = useState(false);
   const [mentorName, setMentorName] = useState("tu mentor");
@@ -40,11 +45,23 @@ export default function SesionPage() {
   const [error, setError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [me, setMe] = useState<MeResponse | null>(null);
+  // NEUR-73: aviso si alcanza límite durante la sesión activa
+  const [limitWarning, setLimitWarning] = useState<string | null>(null);
+  // NEUR-77: contador de reconexiones
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const elapsedSecsRef = useRef(0);
+
+  // Sincronizar ref con state para acceso en callbacks sin stale closure
+  useEffect(() => { elapsedSecsRef.current = elapsedSecs; }, [elapsedSecs]);
 
   useEffect(() => {
     fetch("/api/me")
@@ -57,7 +74,7 @@ export default function SesionPage() {
     conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation]);
 
-  // Timer
+  // Timer de sesión
   useEffect(() => {
     if (phase === "active") {
       timerRef.current = setInterval(() => setElapsedSecs((s) => s + 1), 1000);
@@ -71,7 +88,6 @@ export default function SesionPage() {
     return `${m}:${s}`;
   };
 
-  // Mic check
   const requestMic = useCallback(async () => {
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -84,92 +100,156 @@ export default function SesionPage() {
     }
   }, []);
 
-  // Connect WebSocket
-  const connect = useCallback(async () => {
-    if (!me) return;
-    const ws = new WebSocket(`${WS_URL}/ws/session/${mentorId}`);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: "auth",
-        token: me.accessToken ?? "",
-        childId: me.childId ?? "",
-      }));
-    };
-
-    ws.onmessage = (event: MessageEvent<string>) => {
-      let msg: Record<string, unknown>;
-      try { msg = JSON.parse(event.data) as Record<string, unknown>; }
-      catch { return; }
-
-      const type = msg["type"] as string;
-
-      if (type === "session_ready") {
-        setMentorName((msg["mentorName"] as string) ?? "tu mentor");
-        setMentorEmoji((msg["mentorEmoji"] as string) ?? "🤖");
-        const greeting = (msg["greeting"] as string) ?? "";
-        setMentorText(greeting);
-        setConversation([{ role: "mentor", text: greeting }]);
-        setPhase("active");
-      } else if (type === "transcript") {
-        const text = (msg["text"] as string) ?? "";
-        setTranscript(text);
-        setConversation((prev) => [...prev, { role: "child", text }]);
-      } else if (type === "mentor_text") {
-        const text = (msg["text"] as string) ?? "";
-        setMentorText(text);
-        setIsMentorSpeaking(true);
-        setConversation((prev) => [...prev, { role: "mentor", text }]);
-      } else if (type === "mentor_audio") {
-        const data = (msg["data"] as string) ?? "";
-        if (data) {
-          try {
-            const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-            const blob = new Blob([bytes], { type: "audio/mp3" });
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.onended = () => {
-              setIsMentorSpeaking(false);
-              URL.revokeObjectURL(url);
-            };
-            void audio.play();
-          } catch { setIsMentorSpeaking(false); }
-        }
-      } else if (type === "latency") {
-        if (process.env["NODE_ENV"] === "development") {
-          console.log(`[latency] STT=${String(msg["stt_ms"])}ms LLM=${String(msg["llm_ms"])}ms TTS=${String(msg["tts_ms"])}ms total=${String(msg["total_ms"])}ms`);
-        }
-      } else if (type === "session_ended") {
-        const finalScore = (msg["score"] as number) ?? 0;
-        const duration = (msg["duration_secs"] as number) ?? elapsedSecs;
-        setPhase("ended");
-        ws.close();
-        router.push(
-          `/dashboard/nino/mentores/sesion/${mentorId}/resultado?score=${finalScore}&duration=${duration}&mentor=${encodeURIComponent(mentorName)}`
-        );
-      } else if (type === "error") {
-        setError((msg["message"] as string) ?? "Error en la sesión");
-        setPhase("mic_check");
-        ws.close();
+  // ── NEUR-77: Heartbeat para detectar desconexión ─────────────────────────
+  const startHeartbeat = useCallback(() => {
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    heartbeatRef.current = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "ping" }));
       }
-    };
+    }, HEARTBEAT_INTERVAL_MS);
+  }, []);
 
-    ws.onerror = () => {
-      setError("No pudimos conectar con el mentor. Intenta de nuevo.");
-      setPhase("mic_check");
-    };
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+  }, []);
 
-    ws.onclose = () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [me, mentorId, mentorName, elapsedSecs, router]);
+  // ── Conectar/reconectar WebSocket ────────────────────────────────────────
+  const connect = useCallback(
+    (isReconnect = false) => {
+      if (!me) return;
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // evitar doble reconexión
+        wsRef.current.close();
+      }
+
+      const ws = new WebSocket(`${WS_URL}/ws/session/${mentorId}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            type: "auth",
+            token: me.accessToken ?? "",
+            childId: me.childId ?? "",
+          })
+        );
+        if (isReconnect) {
+          reconnectAttemptsRef.current = 0;
+          setReconnectAttempt(0);
+        }
+        startHeartbeat();
+      };
+
+      ws.onmessage = (event: MessageEvent<string>) => {
+        let msg: Record<string, unknown>;
+        try { msg = JSON.parse(event.data) as Record<string, unknown>; }
+        catch { return; }
+
+        const type = msg["type"] as string;
+
+        if (type === "session_ready") {
+          setMentorName((msg["mentorName"] as string) ?? "tu mentor");
+          setMentorEmoji((msg["mentorEmoji"] as string) ?? "🤖");
+          const greeting = (msg["greeting"] as string) ?? "";
+          setMentorText(greeting);
+          sessionIdRef.current = (msg["sessionId"] as string) ?? null;
+          if (!isReconnect) {
+            setConversation([{ role: "mentor", text: greeting }]);
+          }
+          setPhase("active");
+        } else if (type === "transcript") {
+          const text = (msg["text"] as string) ?? "";
+          setTranscript(text);
+          setConversation((prev) => [...prev, { role: "child", text }]);
+        } else if (type === "mentor_text") {
+          const text = (msg["text"] as string) ?? "";
+          setMentorText(text);
+          setIsMentorSpeaking(true);
+          setConversation((prev) => [...prev, { role: "mentor", text }]);
+        } else if (type === "mentor_audio") {
+          const data = (msg["data"] as string) ?? "";
+          if (data) {
+            try {
+              const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+              const blob = new Blob([bytes], { type: "audio/mp3" });
+              const url = URL.createObjectURL(blob);
+              const audio = new Audio(url);
+              audio.onended = () => {
+                setIsMentorSpeaking(false);
+                URL.revokeObjectURL(url);
+              };
+              void audio.play();
+            } catch { setIsMentorSpeaking(false); }
+          }
+        } else if (type === "pong") {
+          // heartbeat ok — no hacer nada
+        } else if (type === "limit_warning") {
+          // NEUR-73: aviso límite durante sesión activa
+          setLimitWarning((msg["message"] as string) ?? null);
+        } else if (type === "latency") {
+          if (process.env["NODE_ENV"] === "development") {
+            console.log(
+              `[latency] STT=${String(msg["stt_ms"])}ms ` +
+              `LLM=${String(msg["llm_ms"])}ms ` +
+              `TTS=${String(msg["tts_ms"])}ms ` +
+              `total=${String(msg["total_ms"])}ms`
+            );
+          }
+        } else if (type === "session_ended") {
+          const finalScore = (msg["score"] as number) ?? 0;
+          const duration = (msg["duration_secs"] as number) ?? elapsedSecsRef.current;
+          setPhase("ended");
+          stopHeartbeat();
+          ws.close();
+          router.push(
+            `/dashboard/nino/mentores/sesion/${mentorId}/resultado` +
+            `?score=${finalScore}&duration=${duration}&mentor=${encodeURIComponent(mentorName)}`
+          );
+        } else if (type === "error") {
+          setError((msg["message"] as string) ?? "Error en la sesión");
+          setPhase("mic_check");
+          stopHeartbeat();
+          ws.close();
+        }
+      };
+
+      ws.onerror = () => {
+        stopHeartbeat();
+        // El onclose se encargará de la reconexión
+      };
+
+      ws.onclose = () => {
+        stopHeartbeat();
+        if (timerRef.current) clearInterval(timerRef.current);
+
+        // NEUR-77: EE-M02 — intentar reconectar si la sesión estaba activa
+        if (
+          phase === "active" &&
+          reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS
+        ) {
+          reconnectAttemptsRef.current += 1;
+          setReconnectAttempt(reconnectAttemptsRef.current);
+          setPhase("reconnecting");
+
+          reconnectTimerRef.current = setTimeout(() => {
+            connect(true);
+          }, RECONNECT_DELAY_MS);
+        }
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [me, mentorId, mentorName, router, startHeartbeat, stopHeartbeat]
+  );
 
   useEffect(() => {
-    if (phase === "connecting" && me) void connect();
+    if (phase === "connecting" && me) connect(false);
   }, [phase, me, connect]);
 
-  // Recording handlers
+  // ── Grabación ─────────────────────────────────────────────────────────────
   const startRecording = useCallback(async () => {
     if (isRecording) return;
     try {
@@ -178,7 +258,11 @@ export default function SesionPage() {
       mediaRecorderRef.current = mr;
 
       mr.ondataavailable = (e: BlobEvent) => {
-        if (e.data.size === 0 || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (
+          e.data.size === 0 ||
+          !wsRef.current ||
+          wsRef.current.readyState !== WebSocket.OPEN
+        ) return;
         const reader = new FileReader();
         reader.onloadend = () => {
           const b64 = (reader.result as string).split(",")[1];
@@ -189,7 +273,7 @@ export default function SesionPage() {
         reader.readAsDataURL(e.data);
       };
 
-      mr.start(250); // chunks cada 250ms
+      mr.start(250);
       setIsRecording(true);
     } catch { /* micrófono no disponible */ }
   }, [isRecording]);
@@ -203,36 +287,39 @@ export default function SesionPage() {
 
   const endSession = useCallback(() => {
     stopRecording();
+    stopHeartbeat();
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "end_session" }));
     }
-  }, [stopRecording]);
+    // Limpiar timer de reconexión si el usuario termina voluntariamente
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+  }, [stopRecording, stopHeartbeat]);
 
-  // Cleanup on unmount
+  // Cleanup al desmontar
   useEffect(() => {
     return () => {
       stopRecording();
+      stopHeartbeat();
       wsRef.current?.close();
       if (timerRef.current) clearInterval(timerRef.current);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
-  }, [stopRecording]);
+  }, [stopRecording, stopHeartbeat]);
 
-  // ── Phase: mic_check ──────────────────────────────────
+  // ── Phase: mic_check ───────────────────────────────────────────────────────
   if (phase === "mic_check") {
     return (
       <div className="fixed inset-0 bg-gradient-to-br from-brand-600 to-violet-700 flex items-center justify-center p-4 z-50">
         <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl">
           <div className="text-6xl mb-4">🎤</div>
-          <h2 className="font-display text-2xl text-slate-900 mb-2">
-            Activar micrófono
-          </h2>
+          <h2 className="font-display text-2xl text-slate-900 mb-2">Activar micrófono</h2>
           {error ? (
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-5 text-left">
               <p className="font-body text-sm text-amber-800 whitespace-pre-line">{error}</p>
             </div>
           ) : (
             <p className="font-body text-slate-500 mb-6 text-sm">
-              Necesitamos tu micrófono para que puedas hablar con tu mentor IA.
+              Necesitamos tu micrófono para hablar con tu mentor IA.
             </p>
           )}
           <button
@@ -241,7 +328,10 @@ export default function SesionPage() {
           >
             Activar micrófono 🎤
           </button>
-          <Link href="/dashboard/nino/mentores" className="block font-body text-sm text-slate-400 hover:text-slate-600 transition-colors">
+          <Link
+            href="/dashboard/nino/mentores"
+            className="block font-body text-sm text-slate-400 hover:text-slate-600 transition-colors"
+          >
             Volver a mentores
           </Link>
         </div>
@@ -249,7 +339,7 @@ export default function SesionPage() {
     );
   }
 
-  // ── Phase: connecting ─────────────────────────────────
+  // ── Phase: connecting ──────────────────────────────────────────────────────
   if (phase === "connecting") {
     return (
       <div className="fixed inset-0 bg-gradient-to-br from-brand-600 to-violet-700 flex items-center justify-center z-50">
@@ -262,7 +352,35 @@ export default function SesionPage() {
     );
   }
 
-  // ── Phase: active ─────────────────────────────────────
+  // ── Phase: reconnecting (NEUR-77) ─────────────────────────────────────────
+  if (phase === "reconnecting") {
+    return (
+      <div className="fixed inset-0 bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center z-50">
+        <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl">
+          <WifiOff className="w-14 h-14 text-amber-400 mx-auto mb-4" />
+          <h2 className="font-display text-xl text-slate-900 mb-2">
+            Se fue la conexión 😅
+          </h2>
+          <p className="font-body text-slate-500 mb-4 text-sm">
+            Reconectando automáticamente... ({reconnectAttempt}/{MAX_RECONNECT_ATTEMPTS})
+          </p>
+          <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-4" />
+          <button
+            onClick={() => {
+              if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+              endSession();
+              router.push("/dashboard/nino/mentores");
+            }}
+            className="w-full px-6 py-3 rounded-2xl border-2 border-gray-200 text-slate-600 font-body font-semibold hover:bg-gray-50 transition-all"
+          >
+            Salir de la sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Phase: active ──────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 bg-slate-900 flex flex-col z-50">
       {/* Header */}
@@ -283,10 +401,16 @@ export default function SesionPage() {
         <div />
       </div>
 
+      {/* NEUR-73: Banner límite alcanzado durante sesión */}
+      {limitWarning && (
+        <div className="flex-shrink-0 bg-amber-500/90 px-4 py-2 text-center">
+          <p className="font-body text-sm text-white font-semibold">{limitWarning}</p>
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Left: mentor avatar + subtitles */}
+        {/* Mentor avatar + subtítulos */}
         <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4">
-          {/* Emoji animado del mentor */}
           <div
             className="text-[120px] leading-none select-none transition-transform duration-300"
             style={{
@@ -297,14 +421,12 @@ export default function SesionPage() {
             {mentorEmoji}
           </div>
 
-          {/* Subtítulos */}
           {mentorText && (
             <div className="max-w-sm bg-slate-800/80 backdrop-blur-sm rounded-2xl px-5 py-3 text-center">
               <p className="font-body text-white text-sm leading-relaxed">{mentorText}</p>
             </div>
           )}
 
-          {/* Transcript del niño */}
           {transcript && (
             <div className="max-w-sm bg-brand-500/20 border border-brand-500/30 rounded-2xl px-4 py-2 text-center">
               <p className="font-body text-brand-300 text-xs">Tú: {transcript}</p>
@@ -312,15 +434,12 @@ export default function SesionPage() {
           )}
         </div>
 
-        {/* Right: stats + conversation */}
+        {/* Stats + conversación */}
         <div className="w-full lg:w-72 bg-slate-800 border-t lg:border-t-0 lg:border-l border-slate-700 flex flex-col">
-          {/* Stats */}
           <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-4">
-            <span className="font-body text-sm text-amber-400 font-semibold">⭐ {score}</span>
             <span className="font-body text-sm text-slate-400">⏱ {formatTime(elapsedSecs)}</span>
           </div>
 
-          {/* Conversation */}
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             <p className="font-body text-xs text-slate-500 text-center mb-2">💬 Conversación</p>
             {conversation.map((entry, i) => (
@@ -339,7 +458,7 @@ export default function SesionPage() {
         </div>
       </div>
 
-      {/* Bottom controls */}
+      {/* Controles */}
       <div className="flex-shrink-0 px-6 py-4 bg-slate-800 border-t border-slate-700 flex items-center justify-center gap-4">
         <button
           onPointerDown={() => void startRecording()}

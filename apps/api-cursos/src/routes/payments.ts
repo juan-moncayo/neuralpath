@@ -8,6 +8,7 @@ import {
   getTransactionByReference,
   verifyWebhookSignature,
 } from "../services/wompi";
+import { sendPaymentConfirmationEmail } from "../services/email";
 
 const PLAN_PRICES_COP: Record<string, number> = {
   premium: 29900,
@@ -21,6 +22,7 @@ const checkoutSchema = z.object({
   redirectUrl: z.string().url(),
 });
 
+// ─── NEUR-47: procesar pago aprobado + enviar email de confirmación ──────────
 async function processApprovedPayment(
   wompiRef: string,
   plan: string,
@@ -28,18 +30,18 @@ async function processApprovedPayment(
   userId: string,
   amountCop: number
 ): Promise<void> {
-  // Actualizar PaymentCop
+  // 1. Actualizar PaymentCop
   await prisma.paymentCop.update({
     where: { wompiRef },
     data: { status: "approved", paidAt: new Date() },
   });
 
-  if (plan === "premium" || plan === "pro") {
-    // Crear o actualizar suscripción
-    const periodStart = new Date();
-    const periodEnd = new Date(periodStart);
-    periodEnd.setDate(periodEnd.getDate() + 30);
+  const periodStart = new Date();
+  const periodEnd = new Date(periodStart);
+  periodEnd.setDate(periodEnd.getDate() + 30);
 
+  if (plan === "premium" || plan === "pro") {
+    // 2. Crear suscripción activa
     await prisma.subscription.create({
       data: {
         userId,
@@ -51,21 +53,40 @@ async function processApprovedPayment(
       },
     });
 
-    // Actualizar plan del usuario
+    // 3. Actualizar plan del usuario
     await prisma.user.update({
       where: { id: userId },
       data: { plan },
     });
+
+    // 4. NEUR-47: Enviar email de confirmación al padre (no bloqueante)
+    prisma.user
+      .findUnique({
+        where: { id: userId },
+        select: { email: true, name: true },
+      })
+      .then((user) => {
+        if (!user) return;
+        void sendPaymentConfirmationEmail({
+          parentEmail: user.email,
+          parentName: user.name,
+          plan,
+          amountCop,
+          wompiRef,
+          periodStart,
+          periodEnd,
+        });
+      })
+      .catch((err: unknown) => {
+        console.error("[payments] Error obteniendo usuario para email:", err);
+      });
   }
 
-  // Si es pago de curso específico, el enrollment se crea en el frontend
-  // ya que necesita childId
-  void courseId;
-  void amountCop;
+  void courseId; // el enrollment se crea en el frontend (necesita childId)
 }
 
 export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
-  // POST /api/payments/checkout — genera checkout Wompi
+  // ─── POST /api/payments/checkout ─────────────────────────────────────────
   fastify.post("/checkout", async (request, reply) => {
     const user = getUserFromHeaders(request);
     if (!user) {
@@ -85,7 +106,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
     const amountCents = copToCents(amountCop);
     const reference = `np-${plan}-${user.userId}-${Date.now()}`;
 
-    // Verificar si ya tiene el plan activo (EE-C06)
+    // EE-C06: evitar compra duplicada de plan activo
     const existingUser = await prisma.user.findUnique({
       where: { id: user.userId },
       select: { plan: true },
@@ -98,7 +119,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    // Crear registro pendiente en PaymentCop
+    // Crear registro pendiente
     await prisma.paymentCop.create({
       data: {
         userId: user.userId,
@@ -122,7 +143,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ checkoutUrl, reference });
   });
 
-  // POST /api/payments/webhook — webhook de Wompi
+  // ─── POST /api/payments/webhook ──────────────────────────────────────────
   fastify.post("/webhook", async (request, reply) => {
     const timestamp = request.headers["x-event-checksum-timestamp"] as string | undefined;
     const checksum = request.headers["x-event-checksum"] as string | undefined;
@@ -130,7 +151,6 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
     if (timestamp && checksum) {
       const rawBody = JSON.stringify(request.body);
       const isValid = verifyWebhookSignature(rawBody, checksum, timestamp);
-
       if (!isValid) {
         fastify.log.warn("Webhook Wompi con firma inválida");
         return reply.status(401).send({ error: "Firma inválida" });
@@ -166,7 +186,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     if (payment.status !== "pending") {
-      return reply.status(200).send({ ok: true }); // Ya procesado
+      return reply.status(200).send({ ok: true }); // Ya procesado — idempotente
     }
 
     if (transaction.status === "APPROVED") {
@@ -192,7 +212,8 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(200).send({ ok: true });
   });
 
-  // GET /api/payments/verify/:reference — verificar estado de pago
+  // ─── GET /api/payments/verify/:reference ─────────────────────────────────
+  // EE-C05: si webhook no llegó en 60s → consultar Wompi manualmente
   fastify.get<{ Params: { reference: string } }>(
     "/verify/:reference",
     async (request, reply) => {
@@ -207,7 +228,6 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: "Pago no encontrado" });
       }
 
-      // Si sigue en pending, consultar Wompi directamente (EE-C05)
       if (payment.status === "pending") {
         const wompiTx = await getTransactionByReference(reference);
 
@@ -219,7 +239,6 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
             payment.user.id,
             payment.amountCop
           );
-
           return reply.send({
             status: "APPROVED",
             plan: payment.plan,
@@ -235,10 +254,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.send({ status: "DECLINED", plan: payment.plan });
         }
 
-        return reply.send({
-          status: "PENDING",
-          plan: payment.plan,
-        });
+        return reply.send({ status: "PENDING", plan: payment.plan });
       }
 
       return reply.send({

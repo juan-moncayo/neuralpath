@@ -11,6 +11,7 @@ import { webhooksRoutes } from "./routes/webhooks";
 import { paymentsRoutes } from "./routes/payments";
 import { childrenRoutes } from "./routes/children";
 import { healthRoutes } from "./routes/health";
+import { certificatesRoutes } from "./routes/certificates"; // NEUR-79/80
 
 const PORT = parseInt(process.env["API_CURSOS_PORT"] ?? "3001", 10);
 const HOST = process.env["HOST"] ?? "0.0.0.0";
@@ -51,14 +52,15 @@ async function bootstrap(): Promise<void> {
   });
 
   // Routes
-  await app.register(healthRoutes, { prefix: "/health" });
-  await app.register(coursesRoutes, { prefix: "/api/courses" });
-  await app.register(lessonsRoutes, { prefix: "/api/lessons" });
-  await app.register(enrollmentsRoutes, { prefix: "/api/enrollments" });
-  await app.register(chatRoutes, { prefix: "/api/chat" });
-  await app.register(webhooksRoutes, { prefix: "/api/webhooks" });
-  await app.register(paymentsRoutes, { prefix: "/api/payments" });
-  await app.register(childrenRoutes, { prefix: "/api/children" });
+  await app.register(healthRoutes,       { prefix: "/health" });
+  await app.register(coursesRoutes,      { prefix: "/api/courses" });
+  await app.register(lessonsRoutes,      { prefix: "/api/lessons" });
+  await app.register(enrollmentsRoutes,  { prefix: "/api/enrollments" });
+  await app.register(chatRoutes,         { prefix: "/api/chat" });
+  await app.register(webhooksRoutes,     { prefix: "/api/webhooks" });
+  await app.register(paymentsRoutes,     { prefix: "/api/payments" });
+  await app.register(childrenRoutes,     { prefix: "/api/children" });
+  await app.register(certificatesRoutes, { prefix: "/api/certificates" }); // NEUR-79/80
 
   // Global error handler
   app.setErrorHandler((error, _request, reply) => {

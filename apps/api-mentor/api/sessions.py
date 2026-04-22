@@ -1,3 +1,8 @@
+"""
+NEUR-73: EE-M08 — niño Free alcanza límite durante sesión activa
+  → completar la sesión en curso, bloquear solo desde la siguiente
+NEUR-77: EE-M02 — pérdida de conexión → reconexión 30s → cierre limpio
+"""
 import asyncio
 import base64
 import json
@@ -16,12 +21,22 @@ from middleware.auth import verify_jwt
 
 logger = logging.getLogger(__name__)
 
+# NEUR-73: límites por plan
 PLAN_LIMITS: dict[str, int] = {"free": 2, "premium": 0, "pro": 10}
-AUDIO_CHUNK_THRESHOLD = 48000  # ~3 seconds of webm audio
+
+# Threshold para procesar audio (~3 segundos de webm)
+AUDIO_CHUNK_THRESHOLD = 48000
+
+# NEUR-77: tiempo máximo de espera en reconexión (segundos)
+RECONNECT_TIMEOUT = 30
 
 
 async def _send(ws: WebSocket, msg: dict[str, Any]) -> None:
-    await ws.send_text(json.dumps(msg))
+    """Envío seguro — ignora si la conexión ya cerró."""
+    try:
+        await ws.send_text(json.dumps(msg))
+    except Exception:
+        pass  # conexión ya cerrada
 
 
 async def handle_session(websocket: WebSocket, mentor_id: str) -> None:
@@ -34,87 +49,108 @@ async def handle_session(websocket: WebSocket, mentor_id: str) -> None:
     start_time = 0.0
     mentor: dict[str, Any] | None = None
     child_id: str | None = None
+    child_name: str = ""
+
+    # NEUR-73: flag para saber si ya alcanzó el límite durante la sesión
+    limit_reached_during_session = False
 
     try:
-        # 1. Wait for auth message
+        # ── 1. Auth ──────────────────────────────────────────────────────────
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
         msg = json.loads(raw)
 
         if msg.get("type") != "auth":
-            await _send(websocket, {"type": "error", "code": "AUTH_FAILED", "message": "Sesión expirada, vuelve a entrar"})
+            await _send(websocket, {
+                "type": "error",
+                "code": "AUTH_FAILED",
+                "message": "Sesión expirada, vuelve a entrar",
+            })
             await websocket.close()
             return
 
         token: str = msg.get("token", "")
         child_id = msg.get("childId", "")
 
-        # 2. Verify JWT
+        # ── 2. Verificar JWT ─────────────────────────────────────────────────
         try:
             payload = verify_jwt(token)
         except Exception:
-            await _send(websocket, {"type": "error", "code": "AUTH_FAILED", "message": "Sesión expirada, vuelve a entrar"})
+            await _send(websocket, {
+                "type": "error",
+                "code": "AUTH_FAILED",
+                "message": "Sesión expirada, vuelve a entrar",
+            })
             await websocket.close()
             return
 
         user_id: str = payload["userId"]
         plan: str = payload.get("plan", "free")
 
-        # 3. Verify child belongs to user
+        # ── 3. Verificar que el niño pertenece al padre ──────────────────────
         child = await db.get_child(child_id)
         if not child or child["parentId"] != user_id:
-            await _send(websocket, {"type": "error", "code": "AUTH_FAILED", "message": "Perfil no autorizado"})
-            await websocket.close()
-            return
-
-        child_name: str = child["name"]
-
-        # 4. Check session limit
-        sessions_used = await db.count_sessions_this_month(child_id)
-        limit = PLAN_LIMITS.get(plan, 2)
-        if limit > 0 and sessions_used >= limit:
             await _send(websocket, {
                 "type": "error",
-                "code": "LIMIT_REACHED",
-                "message": f"Alcanzaste tus {limit} sesiones del mes 😊 Pídele a tu papá que active el Plan Pro",
+                "code": "AUTH_FAILED",
+                "message": "Perfil no autorizado",
             })
             await websocket.close()
             return
 
-        # 5. Get mentor
+        child_name = child["name"]
+
+        # ── 4. NEUR-73: Verificar límite ANTES de iniciar la sesión ─────────
+        #    Si ya alcanzó el límite, no se inicia una sesión nueva.
+        #    Si lo alcanza DURANTE la sesión → la dejamos terminar (ver loop).
+        sessions_used = await db.count_sessions_this_month(child_id)
+        limit = PLAN_LIMITS.get(plan, 2)
+
+        if limit > 0 and sessions_used >= limit:
+            await _send(websocket, {
+                "type": "error",
+                "code": "LIMIT_REACHED",
+                "message": (
+                    f"Alcanzaste tus {limit} sesiones del mes 😊 "
+                    "Pídele a tu papá que active el Plan Pro"
+                ),
+            })
+            await websocket.close()
+            return
+
+        # ── 5. Obtener mentor ────────────────────────────────────────────────
         mentor = await db.get_mentor(mentor_id)
         if not mentor:
-            await _send(websocket, {"type": "error", "code": "MENTOR_NOT_FOUND", "message": "Mentor no encontrado"})
+            await _send(websocket, {
+                "type": "error",
+                "code": "MENTOR_NOT_FOUND",
+                "message": "Mentor no encontrado",
+            })
             await websocket.close()
             return
 
         mentor_name: str = mentor["name"]
 
-        # 6. Create session in DB
+        # ── 6. Crear sesión en DB ────────────────────────────────────────────
         session_id = await db.create_session(child_id, mentor_id)
         start_time = time.time()
 
-        # 7. Generate greeting
+        # ── 7. Saludo del mentor ─────────────────────────────────────────────
         greeting = await llm_service.generate(
             mentor_id=mentor_id,
             mentor_name=mentor_name,
             history=[],
             user_text=f"Saluda al niño {child_name} y preséntate brevemente. Una sola frase cálida.",
         )
-
-        # 8. Synthesize greeting audio
         greeting_audio = await tts_service.synthesize(mentor_name, greeting)
 
-        # 9. Send session_ready
-        session_ready: dict[str, Any] = {
+        await _send(websocket, {
             "type": "session_ready",
             "sessionId": session_id,
             "mentorName": mentor_name,
             "mentorEmoji": mentor.get("emoji", "🤖"),
             "greeting": greeting,
-        }
-        await _send(websocket, session_ready)
+        })
 
-        # Send greeting audio if available
         if greeting_audio:
             await _send(websocket, {
                 "type": "mentor_audio",
@@ -122,7 +158,7 @@ async def handle_session(websocket: WebSocket, mentor_id: str) -> None:
                 "text": greeting,
             })
 
-        # Main loop
+        # ── 8. Loop principal ────────────────────────────────────────────────
         async for raw_msg in websocket.iter_text():
             try:
                 msg = json.loads(raw_msg)
@@ -130,6 +166,24 @@ async def handle_session(websocket: WebSocket, mentor_id: str) -> None:
                 continue
 
             msg_type = msg.get("type")
+
+            # ── NEUR-73: verificar límite en cada turno ──────────────────────
+            # Si alcanza el límite DURANTE la sesión, avisar pero NO cortar.
+            # El niño completa su turno actual; al enviar "end_session" termina normal.
+            if not limit_reached_during_session and limit > 0:
+                current_count = await db.count_sessions_this_month(child_id)
+                # La sesión actual ya está contada como "active", no "completed" aún
+                # → el límite real pendiente es si completedSessions >= limit
+                # Usamos sessions_used + 1 sesión activa
+                if current_count >= limit:
+                    limit_reached_during_session = True
+                    await _send(websocket, {
+                        "type": "limit_warning",
+                        "message": (
+                            f"Esta es tu última sesión del mes 🌟 "
+                            "¡Aprovéchala al máximo! Pídele a tu papá que active Plan Pro."
+                        ),
+                    })
 
             if msg_type == "audio_chunk":
                 chunk_b64 = msg.get("data", "")
@@ -184,30 +238,63 @@ async def handle_session(websocket: WebSocket, mentor_id: str) -> None:
                         "tts_ms": round(tts_ms),
                         "total_ms": round(total_ms),
                     })
-                    logger.info(f"Pipeline: STT={stt_ms:.0f}ms LLM={llm_ms:.0f}ms TTS={tts_ms:.0f}ms total={total_ms:.0f}ms")
+                    logger.info(
+                        f"Pipeline: STT={stt_ms:.0f}ms LLM={llm_ms:.0f}ms "
+                        f"TTS={tts_ms:.0f}ms total={total_ms:.0f}ms"
+                    )
 
                     score_turn = 10 + (5 if len(text.split()) > 5 else 0)
                     scores.append(score_turn)
 
             elif msg_type == "end_session":
+                # NEUR-73: terminar la sesión normal aunque haya alcanzado el límite
                 await _end_session(
                     websocket, session_id, mentor_name, child_name, child_id,
                     history, scores, start_time
                 )
                 return
 
+            elif msg_type == "ping":
+                # NEUR-77: heartbeat del cliente
+                await _send(websocket, {"type": "pong"})
+
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session {session_id}")
+        logger.info(f"WebSocket desconectado — sesión {session_id}")
+        # NEUR-77: EE-M02 — esperar reconexión 30s antes de cerrar
+        if session_id:
+            await _wait_for_reconnect_or_close(session_id, start_time)
+
     except asyncio.TimeoutError:
-        await _send(websocket, {"type": "error", "code": "TIMEOUT", "message": "Tiempo de espera agotado"})
+        await _send(websocket, {
+            "type": "error",
+            "code": "TIMEOUT",
+            "message": "Tiempo de espera agotado",
+        })
     except Exception as e:
-        logger.error(f"Session error: {e}")
+        logger.error(f"Error en sesión {session_id}: {e}")
     finally:
         if session_id:
             try:
-                await db.update_session(session_id, "cancelled", 0, int(time.time() - start_time) if start_time else 0)
+                duration = int(time.time() - start_time) if start_time else 0
+                await db.update_session(session_id, "cancelled", 0, duration)
             except Exception:
                 pass
+
+
+async def _wait_for_reconnect_or_close(session_id: str, start_time: float) -> None:
+    """
+    NEUR-77: EE-M02 — tras desconexión, esperar RECONNECT_TIMEOUT segundos.
+    Si el cliente no reconecta, marcar la sesión como cancelada.
+    La reconexión real la maneja el cliente enviando el auth nuevamente.
+    """
+    logger.info(f"Esperando reconexión {RECONNECT_TIMEOUT}s — sesión {session_id}")
+    await asyncio.sleep(RECONNECT_TIMEOUT)
+    try:
+        duration = int(time.time() - start_time) if start_time else 0
+        await db.update_session(session_id, "cancelled", 0, duration)
+        logger.info(f"Sesión {session_id} marcada cancelada tras timeout de reconexión")
+    except Exception as e:
+        logger.warning(f"No se pudo cerrar sesión {session_id}: {e}")
 
 
 async def _end_session(
@@ -220,13 +307,18 @@ async def _end_session(
     scores: list[int],
     start_time: float,
 ) -> None:
+    """Finaliza la sesión: guarda score, genera feedback GPT-4, envía email al padre."""
     score_total = int(sum(scores) / len(scores)) if scores else 0
     duration_secs = int(time.time() - start_time)
 
     await db.update_session(session_id, "completed", score_total, duration_secs)
 
-    # Generate feedback with GPT-4
-    feedback_points = ["Buena participación.", "Puede practicar más.", "Repasa los temas en casa."]
+    # Generar feedback con GPT-4
+    feedback_points = [
+        "Buena participación.",
+        "Puede practicar más.",
+        "Repasa los temas en casa.",
+    ]
     try:
         prompt = (
             f"Conversación entre el niño {child_name} y {mentor_name}:\n"
@@ -235,18 +327,25 @@ async def _end_session(
             "1. Fortaleza principal del niño en esta sesión\n"
             "2. Área donde puede mejorar\n"
             "3. Una actividad para practicar en casa esta semana\n"
-            "Máximo 2 oraciones por punto. Tono amigable. Formato: solo los 3 puntos numerados."
+            "Máximo 2 oraciones por punto. Tono amigable. "
+            "Formato: solo los 3 puntos numerados."
         )
         fb_response = await llm_service.generate("feedback", "Evaluador", [], prompt)
-        lines = [l.strip() for l in fb_response.split("\n") if l.strip() and l.strip()[0].isdigit()]
+        lines = [
+            l.strip()
+            for l in fb_response.split("\n")
+            if l.strip() and l.strip()[0].isdigit()
+        ]
         if len(lines) >= 3:
             feedback_points = [l[2:].strip() if len(l) > 2 else l for l in lines[:3]]
     except Exception as e:
         logger.warning(f"Feedback generation failed: {e}")
 
-    await db.save_feedback(session_id, feedback_points[0], feedback_points[1], feedback_points[2])
+    await db.save_feedback(
+        session_id, feedback_points[0], feedback_points[1], feedback_points[2]
+    )
 
-    # Send email to parent
+    # Enviar email al padre
     try:
         child_data = await db.get_child(child_id)
         if child_data:
@@ -257,9 +356,9 @@ async def _end_session(
                     score_total, duration_secs, feedback_points
                 )
     except Exception as e:
-        logger.warning(f"Could not send feedback email: {e}")
+        logger.warning(f"No se pudo enviar email de feedback: {e}")
 
-    # Motivational message
+    # Mensaje motivador según score
     if score_total >= 90:
         message = f"¡Eres una estrella, {child_name}! ⭐⭐⭐⭐⭐"
     elif score_total >= 75:
@@ -269,10 +368,13 @@ async def _end_session(
     else:
         message = f"¡Sigue intentando, {child_name}! 🚀⭐⭐"
 
-    await websocket.send_text(json.dumps({
+    await _send(websocket, {
         "type": "session_ended",
         "score": score_total,
         "duration_secs": duration_secs,
         "message": message,
-    }))
-    await websocket.close()
+    })
+    try:
+        await websocket.close()
+    except Exception:
+        pass
